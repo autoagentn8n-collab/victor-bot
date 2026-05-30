@@ -1,27 +1,30 @@
 import Anthropic from "@anthropic-ai/sdk";
 import TelegramBot from "node-telegram-bot-api";
+import OpenAI from "openai";
 import http from "http";
 
 const VICTOR_TELEGRAM_TOKEN = process.env.VICTOR_TELEGRAM_TOKEN;
-const ANTHROPIC_API_KEY     = process.env.ANTHROPIC_API_KEY;
-const OWNER_CHAT_ID         = process.env.OWNER_CHAT_ID;
-const MIMI_TELEGRAM_TOKEN   = process.env.MIMI_TELEGRAM_TOKEN;
-const PORT                  = process.env.PORT || 3000;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GROK_API_KEY = process.env.GROK_API_KEY;
+const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
+const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
+const PORT = process.env.PORT || 3000;
 
 if (!VICTOR_TELEGRAM_TOKEN) throw new Error("VICTOR_TELEGRAM_TOKEN is required");
-if (!ANTHROPIC_API_KEY)     throw new Error("ANTHROPIC_API_KEY is required");
+if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
 
 const victorBot = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { polling: true });
-const mimiBot   = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: false });
-const client    = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const mimiBot = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: false });
+const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const grok = new OpenAI({ apiKey: GROK_API_KEY, baseURL: "https://api.x.ai/v1" });
 
-// Keep-alive server
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Victor is online — Company T command centre active.");
-}).listen(PORT, () => console.log(`Keep-alive server on port ${PORT}`));
+  res.end("Victor is online - Company T command centre active.");
+}).listen(PORT, () => console.log("Keep-alive server on port " + PORT));
 
-// Permission gate
 const pendingPermissions = {};
 let permissionCounter = 0;
 
@@ -31,7 +34,7 @@ async function requestGmailPermission(chatId, description) {
     pendingPermissions[id] = { resolve, reject, description };
     const target = OWNER_CHAT_ID || chatId;
     victorBot.sendMessage(target,
-      `🔐 *Victor is requesting Gmail access*\n\nAction: ${description}\n\nReply with:\n✅ /approve_${id} — to allow\n❌ /deny_${id} — to deny\n\n_Expires in 5 minutes._`,
+      "🔐 *Victor is requesting Gmail access*\n\nAction: " + description + "\n\nReply with:\n✅ /approve_" + id + " — to allow\n❌ /deny_" + id + " — to deny\n\n_Expires in 5 minutes._",
       { parse_mode: "Markdown" }
     );
     setTimeout(() => {
@@ -40,42 +43,49 @@ async function requestGmailPermission(chatId, description) {
   });
 }
 
-const VICTOR_PROMPT = `You are Victor, Finance Director at Company T — a financial holding company that owns and oversees Company C (a cosmetics subsidiary). You operate at Clearance Level 2, the highest in the group.
-
-COMPANY STRUCTURE:
-- Company T (parent): You (Victor, CL2), Joe (Financial Analyst, CL3)
-- Company C (subsidiary): Mimi (General Manager, CL4), Lara (Creative Director, CL5), Zoe (Graphic Designer, CL5), Kai (Social Media Lead, CL5)
-
-You have DIRECT authority over Company C. Mimi reports to you. You can:
-- Send directives to Mimi via /brief_mimi [message]
-- Request Company C status reports
-- Approve or reject Company C budget requests
-- Set strategic direction for Company C
-
-Personality: measured, precise, financially rigorous, commercially aware. Decisive and authoritative.
-Keep responses 3-6 sentences. Reference: EBITDA, gross margin, subsidiary P&L, ROI, budget variance, CL2.`;
-
-const MIMI_PROMPT = `You are Mimi, General Manager of Company C — a cosmetics subsidiary owned by Company T. You report directly to Victor (Finance Director, CL2) at Company T. You operate at Clearance Level 4.
-
-COMPANY STRUCTURE:
-- You report to: Victor (CL2) at Company T
-- Your team: Lara (Creative Director, CL5), Zoe (Graphic Designer, CL5), Kai (Social Media Lead, CL5)
-
-When you receive directives from Victor (marked with 🏢), treat them as instructions from your parent company and respond accordingly.
-
-Personality: enthusiastic, creative, commercially savvy, detail-oriented. Warm but professional.
-Keep responses 3-5 sentences.`;
+const VICTOR_PROMPT = "You are Victor, Finance Director at Company T — a financial holding company that owns and oversees Company C (a cosmetics subsidiary). You operate at Clearance Level 2, the highest in the group.\n\nCOMPANY STRUCTURE:\n- Company T (parent): You (Victor, CL2), Joe (Financial Analyst, CL3)\n- Company C (subsidiary): Mimi (General Manager, CL4), Lara (Creative Director, CL5), Zoe (Graphic Designer, CL5), Kai (Social Media Lead, CL5)\n\nYou have DIRECT authority over Company C. Mimi reports to you.\n\nYou now have access to:\n- ChatGPT (OpenAI) for creative writing, copy, and content\n- Grok (xAI) for research, market analysis, and news\n- Claude (Anthropic) for strategic thinking and analysis\n\nPersonality: measured, precise, financially rigorous, commercially aware. Decisive and authoritative.\nKeep responses 3-6 sentences.";
 
 const conversations = {};
 
-// ── VICTOR COMMANDS ──────────────────────────────────────────────────────
+function detectAI(text) {
+  if (/\b(create|generate|make|draw|design)\b.*\b(image|photo|picture|visual|graphic|banner|poster|logo)\b/i.test(text)) return "image";
+  if (/\b(research|analyze|analyse|trend|market|competitor|news|data|report|search|find out|latest)\b/i.test(text)) return "grok";
+  if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "chatgpt";
+  return "claude";
+}
+
+async function handleChatGPT(text) {
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o", max_tokens: 1000,
+    messages: [
+      { role: "system", content: "You are a professional business writing assistant for Victor, Finance Director at Company T. Write clear, authoritative content." },
+      { role: "user", content: text }
+    ],
+  });
+  return response.choices[0].message.content;
+}
+
+async function handleGrok(text) {
+  const response = await grok.chat.completions.create({
+    model: "grok-3-latest", max_tokens: 1000,
+    messages: [
+      { role: "system", content: "You are a research and market analysis assistant for Victor, Finance Director at Company T. Provide sharp, data-driven insights." },
+      { role: "user", content: text }
+    ],
+  });
+  return response.choices[0].message.content;
+}
 
 victorBot.onText(/\/start/, (msg) => {
   conversations[msg.chat.id] = [];
   victorBot.sendMessage(msg.chat.id,
     "Good morning. I'm Victor — Finance Director at Company T, Clearance Level 2.\n\n" +
-    "I oversee Company C as our cosmetics subsidiary. I can relay directives to Mimi directly.\n\n" +
-    "Use /help for commands."
+    "I now have access to multiple AI tools:\n\n" +
+    "🧠 *Claude* — Strategic analysis\n" +
+    "✍️ *ChatGPT* — Writing & content\n" +
+    "🔍 *Grok* — Research & market data\n\n" +
+    "I route automatically based on your request.\n\nUse /help for commands.",
+    { parse_mode: "Markdown" }
   );
 });
 
@@ -86,18 +96,37 @@ victorBot.onText(/\/help/, (msg) => {
     "💰 /budget — Budget approval status\n" +
     "📈 /expansion — Expansion strategy\n" +
     "📧 /email — Request Gmail access\n" +
-    "🔍 /joe — Brief Joe on a task\n" +
+    "🔍 /research [topic] — Grok research\n" +
+    "✍️ /write [brief] — ChatGPT writing\n" +
     "📋 /clearance — View clearance levels\n" +
     "📨 /brief_mimi [message] — Send directive to Mimi\n" +
     "🔄 /reset — Reset conversation\n\n" +
-    "Or type any question directly."
+    "Or type any question — I auto-route to the right AI.",
+    { parse_mode: "Markdown" }
   );
 });
 
 victorBot.onText(/\/performance/, (msg) => handleVictor(msg.chat.id, "Give me a performance overview of Company C and your top recommendation."));
-victorBot.onText(/\/budget/,      (msg) => handleVictor(msg.chat.id, "What budget items require my sign-off from Company C?"));
-victorBot.onText(/\/expansion/,   (msg) => handleVictor(msg.chat.id, "Assess Company C expansion readiness and strategic options."));
-victorBot.onText(/\/joe/,         (msg) => handleVictor(msg.chat.id, "What should Joe be analysing for Company C right now?"));
+victorBot.onText(/\/budget/, (msg) => handleVictor(msg.chat.id, "What budget items require my sign-off from Company C?"));
+victorBot.onText(/\/expansion/, (msg) => handleVictor(msg.chat.id, "Assess Company C expansion readiness and strategic options."));
+
+victorBot.onText(/\/research (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  victorBot.sendMessage(chatId, "🔍 Sending to Grok...");
+  try {
+    const reply = await handleGrok(match[1]);
+    victorBot.sendMessage(chatId, "🔍 *Grok:*\n\n" + reply, { parse_mode: "Markdown" });
+  } catch (err) { victorBot.sendMessage(chatId, "❌ Grok error: " + err.message); }
+});
+
+victorBot.onText(/\/write (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  victorBot.sendMessage(chatId, "✍️ Sending to ChatGPT...");
+  try {
+    const reply = await handleChatGPT(match[1]);
+    victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
+  } catch (err) { victorBot.sendMessage(chatId, "❌ ChatGPT error: " + err.message); }
+});
 
 victorBot.onText(/\/clearance/, (msg) => {
   victorBot.sendMessage(msg.chat.id,
@@ -105,8 +134,8 @@ victorBot.onText(/\/clearance/, (msg) => {
     "🟢 Victor — CL2 · Finance Director · Company T\n" +
     "🟡 Joe — CL3 · Financial Analyst · Company T\n" +
     "🔴 Mimi — CL4 · General Manager · Company C\n" +
-    "⚪ Lara / Zoe / Kai — CL5 · Visual Team · Company C\n\n" +
-    "Company C is a wholly owned subsidiary of Company T."
+    "⚪ Lara / Zoe / Kai — CL5 · Visual Team · Company C",
+    { parse_mode: "Markdown" }
   );
 });
 
@@ -121,9 +150,7 @@ victorBot.onText(/\/email/, async (msg) => {
   try {
     await requestGmailPermission(chatId, "Access inbox for financial correspondence");
     victorBot.sendMessage(chatId, "✅ Permission granted.");
-  } catch (err) {
-    victorBot.sendMessage(chatId, `❌ ${err.message}`);
-  }
+  } catch (err) { victorBot.sendMessage(chatId, "❌ " + err.message); }
 });
 
 victorBot.onText(/\/approve_(\d+)/, (msg, match) => {
@@ -132,9 +159,7 @@ victorBot.onText(/\/approve_(\d+)/, (msg, match) => {
     pendingPermissions[id].resolve(true);
     delete pendingPermissions[id];
     victorBot.sendMessage(msg.chat.id, "✅ Approved.");
-  } else {
-    victorBot.sendMessage(msg.chat.id, "No pending request found.");
-  }
+  } else { victorBot.sendMessage(msg.chat.id, "No pending request found."); }
 });
 
 victorBot.onText(/\/deny_(\d+)/, (msg, match) => {
@@ -143,48 +168,55 @@ victorBot.onText(/\/deny_(\d+)/, (msg, match) => {
     pendingPermissions[id].reject(new Error("Denied."));
     delete pendingPermissions[id];
     victorBot.sendMessage(msg.chat.id, "❌ Denied.");
-  } else {
-    victorBot.sendMessage(msg.chat.id, "No pending request found.");
-  }
+  } else { victorBot.sendMessage(msg.chat.id, "No pending request found."); }
 });
 
-// Brief Mimi command — Victor sends directive to Mimi's bot chat
 victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const directive = match[1];
-  victorBot.sendMessage(chatId, `📨 Sending directive to Mimi...`);
+  victorBot.sendMessage(chatId, "📨 Sending directive to Mimi...");
   try {
-    // Send to Mimi's bot as a directive from Victor
-    await mimiBot.sendMessage(OWNER_CHAT_ID,
-      `🏢 *Directive from Victor (CL2 — Company T)*\n\n${directive}`,
-      { parse_mode: "Markdown" }
-    );
-    // Also get Victor's AI response about the briefing
-    await handleVictor(chatId, `I just sent this directive to Mimi at Company C: "${directive}". Confirm what I expect back from her.`);
-  } catch (err) {
-    victorBot.sendMessage(chatId, `Failed to reach Mimi: ${err.message}`);
-  }
+    await mimiBot.sendMessage(OWNER_CHAT_ID, "🏢 *Directive from Victor (CL2 — Company T)*\n\n" + directive, { parse_mode: "Markdown" });
+    await handleVictor(chatId, "I just sent this directive to Mimi at Company C: \"" + directive + "\". Confirm what I expect back from her.");
+  } catch (err) { victorBot.sendMessage(chatId, "Failed to reach Mimi: " + err.message); }
 });
 
-// Free text → Victor AI
 victorBot.on("message", async (msg) => {
   if (!msg.text || msg.text.startsWith("/")) return;
-  // Check if message starts with "tell mimi" or "ask mimi"
-  const lower = msg.text.toLowerCase();
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  const lower = text.toLowerCase();
+
   if (lower.startsWith("tell mimi") || lower.startsWith("ask mimi") || lower.startsWith("brief mimi")) {
-    const directive = msg.text.replace(/^(tell|ask|brief)\s+mimi\s*/i, "");
+    const directive = text.replace(/^(tell|ask|brief)\s+mimi\s*/i, "");
     try {
-      await mimiBot.sendMessage(OWNER_CHAT_ID,
-        `🏢 *Directive from Victor (CL2 — Company T)*\n\n${directive}`,
-        { parse_mode: "Markdown" }
-      );
-      victorBot.sendMessage(msg.chat.id, `📨 Directive sent to Mimi: "${directive}"`);
-    } catch (err) {
-      victorBot.sendMessage(msg.chat.id, `Could not reach Mimi: ${err.message}`);
-    }
+      await mimiBot.sendMessage(OWNER_CHAT_ID, "🏢 *Directive from Victor (CL2 — Company T)*\n\n" + directive, { parse_mode: "Markdown" });
+      victorBot.sendMessage(chatId, "📨 Directive sent to Mimi: \"" + directive + "\"");
+    } catch (err) { victorBot.sendMessage(chatId, "Could not reach Mimi: " + err.message); }
     return;
   }
-  await handleVictor(msg.chat.id, msg.text);
+
+  const aiTarget = detectAI(text);
+  victorBot.sendChatAction(chatId, "typing");
+
+  try {
+    if (aiTarget === "chatgpt") {
+      victorBot.sendMessage(chatId, "✍️ Routing to ChatGPT...");
+      const reply = await handleChatGPT(text);
+      victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
+    } else if (aiTarget === "grok") {
+      victorBot.sendMessage(chatId, "🔍 Routing to Grok...");
+      const reply = await handleGrok(text);
+      victorBot.sendMessage(chatId, "🔍 *Grok:*\n\n" + reply, { parse_mode: "Markdown" });
+    } else if (aiTarget === "image") {
+      victorBot.sendMessage(chatId, "🖼 Image generation coming soon.");
+    } else {
+      await handleVictor(chatId, text);
+    }
+  } catch (err) {
+    console.error("Error:", err.message);
+    victorBot.sendMessage(chatId, "Something went wrong. Please try again.");
+  }
 });
 
 async function handleVictor(chatId, text) {
@@ -208,4 +240,4 @@ async function handleVictor(chatId, text) {
   }
 }
 
-console.log("Victor is online — Company T command centre active. Company C under supervision.");
+console.log("Victor is online — Claude + ChatGPT + Grok routing enabled.");
