@@ -10,7 +10,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
 const PORT = process.env.PORT || 3000;
-const VICTOR_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+const VICTOR_URL = (process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace("https://", "http://");
 
 if (!VICTOR_TELEGRAM_TOKEN) throw new Error("VICTOR_TELEGRAM_TOKEN is required");
 if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
