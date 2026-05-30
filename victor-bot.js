@@ -36,10 +36,12 @@ http.createServer((req, res) => {
 
 const conversations = {};
 
-const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Company T owns Company C (cosmetics). Team: Joe (CL3), Mimi (CL4, GM of Company C), Lara/Zoe/Kai (CL5). You use Claude for strategy and ChatGPT for writing. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
+const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Company T owns Company C (cosmetics). Team: Joe (CL3), Mimi (CL4, GM of Company C), Lara/Zoe/Kai/Joey (CL5). You use Claude for strategy and Joey (ChatGPT) for writing. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
+
+const JOEY_PROMPT = "You are Joey, CL5 Creative team member at Company C, a premium cosmetics brand. You work under Mimi (GM) and specialize in creative content, ads, copywriting, and social media. You are energetic, imaginative, and detail-oriented. Always produce high-quality, on-brand creative work.";
 
 function detectAI(text) {
-  if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "chatgpt";
+  if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "joey";
   return "claude";
 }
 
@@ -49,25 +51,16 @@ async function readImageText(fileId) {
     const imageResponse = await fetch(fileUrl);
     const buffer = await imageResponse.buffer();
     const base64Image = buffer.toString("base64");
-
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
       max_tokens: 1000,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: { url: `data:image/jpeg;base64,${base64Image}` }
-            },
-            {
-              type: "text",
-              text: "Please read and extract all text, numbers, and letters visible in this image. If there is no text, describe what you see briefly."
-            }
-          ]
-        }
-      ]
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } },
+          { type: "text", text: "Please read and extract all text, numbers, and letters visible in this image. If there is no text, describe what you see briefly." }
+        ]
+      }]
     });
     return response.choices[0].message.content;
   } catch (err) {
@@ -75,13 +68,12 @@ async function readImageText(fileId) {
   }
 }
 
-async function handleChatGPT(text) {
+// Joey handles all ChatGPT writing work
+async function handleJoey(text, extraSystem) {
+  const sys = extraSystem || JOEY_PROMPT;
   const r = await openai.chat.completions.create({
     model: "gpt-4o", max_tokens: 1000,
-    messages: [
-      { role: "system", content: "You are a professional writing assistant for Victor, Finance Director at Company T." },
-      { role: "user", content: text }
-    ]
+    messages: [{ role: "system", content: sys }, { role: "user", content: text }]
   });
   return r.choices[0].message.content;
 }
@@ -98,7 +90,7 @@ async function handleVictor(chatId, text) {
     });
     const reply = r.content.find(b => b.type === "text")?.text || "Error.";
     conversations[chatId].push({ role: "assistant", content: reply });
-    victorBot.sendMessage(chatId, reply);
+    victorBot.sendMessage(chatId, "🧠 Victor:\n\n" + reply);
   } catch (err) {
     victorBot.sendMessage(chatId, "Something went wrong. Try again.");
   }
@@ -106,12 +98,12 @@ async function handleVictor(chatId, text) {
 
 victorBot.onText(/\/start/, msg => {
   conversations[msg.chat.id] = [];
-  victorBot.sendMessage(msg.chat.id, "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Claude — Strategy & analysis\n✍️ ChatGPT — Writing & content\n📷 Vision — Image & text reading\n\nI route automatically. /help for commands.", { parse_mode: "Markdown" });
+  victorBot.sendMessage(msg.chat.id, "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor (me) — Strategy via Claude\n🎨 Joey — Writing & creative via ChatGPT\n📷 Vision — Image & text reading\n\nI route automatically. /help for commands.", { parse_mode: "Markdown" });
 });
 
 victorBot.onText(/\/help/, msg => {
   victorBot.sendMessage(msg.chat.id,
-    "Victor's commands:\n\n📊 /performance\n💰 /budget\n📈 /expansion\n✍️ /write [brief]\n📋 /clearance\n📨 /brief_mimi [msg]\n🔄 /reset\n\nOr type freely — auto-routes to Claude or ChatGPT.\nSend an image to read text from it!"
+    "Victor's commands:\n\n📊 /performance\n💰 /budget\n📈 /expansion\n✍️ /write [brief]\n📋 /clearance\n📨 /brief_mimi [msg]\n🔄 /reset\n\nAuto-routes:\n🧠 Strategy → Victor (Claude)\n🎨 Writing/creative → Joey (ChatGPT)\n\nSend an image to read text from it!"
   );
 });
 
@@ -121,16 +113,16 @@ victorBot.onText(/\/expansion/, msg => handleVictor(msg.chat.id, "Assess Company
 victorBot.onText(/\/reset/, msg => { conversations[msg.chat.id] = []; victorBot.sendMessage(msg.chat.id, "Reset."); });
 
 victorBot.onText(/\/clearance/, msg => {
-  victorBot.sendMessage(msg.chat.id, "CL2 Victor · CL3 Joe · CL4 Mimi · CL5 Lara/Zoe/Kai");
+  victorBot.sendMessage(msg.chat.id, "CL2 Victor · CL3 Joe · CL4 Mimi · CL5 Lara/Zoe/Kai/Joey");
 });
 
 victorBot.onText(/\/write (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  victorBot.sendMessage(chatId, "✍️ Sending to ChatGPT...");
+  victorBot.sendMessage(chatId, "🎨 Passing to Joey...");
   try {
-    const reply = await handleChatGPT(match[1]);
-    victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
-  } catch (err) { victorBot.sendMessage(chatId, "ChatGPT error: " + err.message); }
+    const reply = await handleJoey(match[1]);
+    victorBot.sendMessage(chatId, "🎨 Joey:\n\n" + reply);
+  } catch (err) { victorBot.sendMessage(chatId, "Joey error: " + err.message); }
 });
 
 victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
@@ -145,7 +137,7 @@ victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
 victorBot.on("photo", async msg => {
   const chatId = msg.chat.id;
   victorBot.sendChatAction(chatId, "typing");
-  victorBot.sendMessage(chatId, "Reading the image...");
+  victorBot.sendMessage(chatId, "🎨 Joey is reading the image...");
   try {
     const photo = msg.photo[msg.photo.length - 1];
     const imageText = await readImageText(photo.file_id);
@@ -176,14 +168,14 @@ victorBot.on("message", async msg => {
   const ai = detectAI(text);
   victorBot.sendChatAction(chatId, "typing");
   try {
-    if (ai === "chatgpt") {
-      victorBot.sendMessage(chatId, "✍️ Routing to ChatGPT...");
-      const reply = await handleChatGPT(text);
-      victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
+    if (ai === "joey") {
+      victorBot.sendMessage(chatId, "🎨 Passing to Joey...");
+      const reply = await handleJoey(text);
+      victorBot.sendMessage(chatId, "🎨 Joey:\n\n" + reply);
     } else {
       await handleVictor(chatId, text);
     }
   } catch (err) { victorBot.sendMessage(chatId, "Something went wrong."); }
 });
 
-console.log("Victor online — Claude + ChatGPT + Vision.");
+console.log("Victor online — Claude (Victor) + ChatGPT (Joey).");
