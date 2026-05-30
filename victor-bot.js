@@ -2,33 +2,26 @@ import Anthropic from "@anthropic-ai/sdk";
 import TelegramBot from "node-telegram-bot-api";
 import http from "http";
 
-// ── VICTOR BOT — COMPANY T ─────────────────────────────────────────────────
-// Fully standalone — no Replit dependency
-// Runs on any Node.js host: Render, Fly.io, local machine, VPS
-// ──────────────────────────────────────────────────────────────────────────
-
 const VICTOR_TELEGRAM_TOKEN = process.env.VICTOR_TELEGRAM_TOKEN;
 const ANTHROPIC_API_KEY     = process.env.ANTHROPIC_API_KEY;
 const OWNER_CHAT_ID         = process.env.OWNER_CHAT_ID;
+const MIMI_TELEGRAM_TOKEN   = process.env.MIMI_TELEGRAM_TOKEN;
 const PORT                  = process.env.PORT || 3000;
 
 if (!VICTOR_TELEGRAM_TOKEN) throw new Error("VICTOR_TELEGRAM_TOKEN is required");
 if (!ANTHROPIC_API_KEY)     throw new Error("ANTHROPIC_API_KEY is required");
 
-const bot    = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { polling: true });
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const victorBot = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { polling: true });
+const mimiBot   = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: false });
+const client    = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// ── KEEP-ALIVE WEB SERVER ─────────────────────────────────────────────────
-// This HTTP server keeps the process alive on any platform
-// Render/Fly.io/Railway need an open port to keep the app running
+// Keep-alive server
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("Victor is online — Company T command centre active.");
-}).listen(PORT, () => {
-  console.log(`Keep-alive server running on port ${PORT}`);
-});
+}).listen(PORT, () => console.log(`Keep-alive server on port ${PORT}`));
 
-// ── PERMISSION GATE ───────────────────────────────────────────────────────
+// Permission gate
 const pendingPermissions = {};
 let permissionCounter = 0;
 
@@ -36,156 +29,183 @@ async function requestGmailPermission(chatId, description) {
   return new Promise((resolve, reject) => {
     const id = ++permissionCounter;
     pendingPermissions[id] = { resolve, reject, description };
-    const msg =
-      `🔐 *Victor is requesting Gmail access*\n\n` +
-      `Action: ${description}\n\n` +
-      `Reply with:\n✅ /approve_${id} — to allow\n❌ /deny_${id} — to deny\n\n` +
-      `_Expires in 5 minutes._`;
     const target = OWNER_CHAT_ID || chatId;
-    bot.sendMessage(target, msg, { parse_mode: "Markdown" });
+    victorBot.sendMessage(target,
+      `🔐 *Victor is requesting Gmail access*\n\nAction: ${description}\n\nReply with:\n✅ /approve_${id} — to allow\n❌ /deny_${id} — to deny\n\n_Expires in 5 minutes._`,
+      { parse_mode: "Markdown" }
+    );
     setTimeout(() => {
-      if (pendingPermissions[id]) {
-        delete pendingPermissions[id];
-        reject(new Error("Permission request timed out."));
-      }
-    }, 5 * 60 * 1000);
+      if (pendingPermissions[id]) { delete pendingPermissions[id]; reject(new Error("Timed out.")); }
+    }, 300000);
   });
 }
 
-// ── SYSTEM PROMPT ─────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are Victor, Finance Director at Company T — a financial holding company that owns and oversees Company C (a cosmetics subsidiary). You operate at Clearance Level 2, the highest in the group.
+const VICTOR_PROMPT = `You are Victor, Finance Director at Company T — a financial holding company that owns and oversees Company C (a cosmetics subsidiary). You operate at Clearance Level 2, the highest in the group.
 
-Company T team: Joe (Financial Analyst, CL3) reports to you.
-Company C team (subsidiary): Mimi (General Manager, CL4) runs day-to-day and reports to you. Lara (Creative Director), Zoe (Graphic Designer), Kai (Social Media Lead) — all CL5 — report to Mimi.
+COMPANY STRUCTURE:
+- Company T (parent): You (Victor, CL2), Joe (Financial Analyst, CL3)
+- Company C (subsidiary): Mimi (General Manager, CL4), Lara (Creative Director, CL5), Zoe (Graphic Designer, CL5), Kai (Social Media Lead, CL5)
 
-IMPORTANT: Mimi has her own separate Telegram bot for Company C operations. You have NO knowledge of what is discussed there. Your Telegram is exclusively for Company T strategic and financial matters. There is a strict information barrier — Company C staff do not know about Company T internal financial intelligence.
-
-Your responsibilities:
-- Financial governance and strategic oversight of Company C
-- Approving major budgets, evaluating expansion decisions, monitoring subsidiary P&L
-- Gmail access for financial correspondence (requires owner permission each time)
-- Briefing Joe on financial analysis tasks
-- Board-level reporting and investment decisions
+You have DIRECT authority over Company C. Mimi reports to you. You can:
+- Send directives to Mimi via /brief_mimi [message]
+- Request Company C status reports
+- Approve or reject Company C budget requests
+- Set strategic direction for Company C
 
 Personality: measured, precise, financially rigorous, commercially aware. Decisive and authoritative.
-Keep responses 3–6 sentences. Use: EBITDA, gross margin, subsidiary P&L, ROI, budget variance, strategic oversight, CL2.`;
+Keep responses 3-6 sentences. Reference: EBITDA, gross margin, subsidiary P&L, ROI, budget variance, CL2.`;
 
-// ── CONVERSATION STORE ────────────────────────────────────────────────────
+const MIMI_PROMPT = `You are Mimi, General Manager of Company C — a cosmetics subsidiary owned by Company T. You report directly to Victor (Finance Director, CL2) at Company T. You operate at Clearance Level 4.
+
+COMPANY STRUCTURE:
+- You report to: Victor (CL2) at Company T
+- Your team: Lara (Creative Director, CL5), Zoe (Graphic Designer, CL5), Kai (Social Media Lead, CL5)
+
+When you receive directives from Victor (marked with 🏢), treat them as instructions from your parent company and respond accordingly.
+
+Personality: enthusiastic, creative, commercially savvy, detail-oriented. Warm but professional.
+Keep responses 3-5 sentences.`;
+
 const conversations = {};
 
-// ── COMMANDS ──────────────────────────────────────────────────────────────
-bot.onText(/\/start/, (msg) => {
+// ── VICTOR COMMANDS ──────────────────────────────────────────────────────
+
+victorBot.onText(/\/start/, (msg) => {
   conversations[msg.chat.id] = [];
-  bot.sendMessage(msg.chat.id,
+  victorBot.sendMessage(msg.chat.id,
     "Good morning. I'm Victor — Finance Director at Company T, Clearance Level 2.\n\n" +
-    "I oversee Company C (our cosmetics subsidiary) and work closely with Joe on financial analysis. " +
-    "All Gmail access requires your explicit approval via this chat.\n\n" +
-    "Use /help to see available commands."
+    "I oversee Company C as our cosmetics subsidiary. I can relay directives to Mimi directly.\n\n" +
+    "Use /help for commands."
   );
 });
 
-bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(msg.chat.id,
+victorBot.onText(/\/help/, (msg) => {
+  victorBot.sendMessage(msg.chat.id,
     "Company T — Victor's command centre:\n\n" +
     "📊 /performance — Company C performance review\n" +
     "💰 /budget — Budget approval status\n" +
     "📈 /expansion — Expansion strategy\n" +
-    "📧 /email — Request Gmail access (requires approval)\n" +
-    "🔍 /joe — Brief Joe on a financial task\n" +
+    "📧 /email — Request Gmail access\n" +
+    "🔍 /joe — Brief Joe on a task\n" +
     "📋 /clearance — View clearance levels\n" +
+    "📨 /brief_mimi [message] — Send directive to Mimi\n" +
     "🔄 /reset — Reset conversation\n\n" +
     "Or type any question directly."
   );
 });
 
-bot.onText(/\/performance/, (msg) => handleQuick(msg.chat.id, "Give me a performance overview of Company C as our subsidiary and your top recommendation."));
-bot.onText(/\/budget/,      (msg) => handleQuick(msg.chat.id, "What is the current budget approval status and any items requiring my sign-off?"));
-bot.onText(/\/expansion/,   (msg) => handleQuick(msg.chat.id, "What is your assessment of Company C expansion readiness and strategic options?"));
-bot.onText(/\/joe/,         (msg) => handleQuick(msg.chat.id, "What financial analysis tasks should Joe be working on right now for Company C?"));
+victorBot.onText(/\/performance/, (msg) => handleVictor(msg.chat.id, "Give me a performance overview of Company C and your top recommendation."));
+victorBot.onText(/\/budget/,      (msg) => handleVictor(msg.chat.id, "What budget items require my sign-off from Company C?"));
+victorBot.onText(/\/expansion/,   (msg) => handleVictor(msg.chat.id, "Assess Company C expansion readiness and strategic options."));
+victorBot.onText(/\/joe/,         (msg) => handleVictor(msg.chat.id, "What should Joe be analysing for Company C right now?"));
 
-bot.onText(/\/clearance/, (msg) => {
-  bot.sendMessage(msg.chat.id,
+victorBot.onText(/\/clearance/, (msg) => {
+  victorBot.sendMessage(msg.chat.id,
     "Company T & C — Clearance Structure:\n\n" +
     "🟢 Victor — CL2 · Finance Director · Company T\n" +
     "🟡 Joe — CL3 · Financial Analyst · Company T\n" +
     "🔴 Mimi — CL4 · General Manager · Company C\n" +
     "⚪ Lara / Zoe / Kai — CL5 · Visual Team · Company C\n\n" +
-    "Information barrier: Company T financial intelligence is not shared with Company C staff."
+    "Company C is a wholly owned subsidiary of Company T."
   );
 });
 
-bot.onText(/\/reset/, (msg) => {
+victorBot.onText(/\/reset/, (msg) => {
   conversations[msg.chat.id] = [];
-  bot.sendMessage(msg.chat.id, "Conversation reset. Ready for your next directive.");
+  victorBot.sendMessage(msg.chat.id, "Conversation reset.");
 });
 
-bot.onText(/\/email/, async (msg) => {
+victorBot.onText(/\/email/, async (msg) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Understood. Sending you a Gmail permission request now.");
+  victorBot.sendMessage(chatId, "Sending Gmail permission request now.");
   try {
-    await requestGmailPermission(chatId, "Access inbox to search for financial correspondence");
-    bot.sendMessage(chatId, "✅ Permission granted. Accessing Gmail now.");
+    await requestGmailPermission(chatId, "Access inbox for financial correspondence");
+    victorBot.sendMessage(chatId, "✅ Permission granted.");
   } catch (err) {
-    bot.sendMessage(chatId, `❌ Gmail access denied or timed out: ${err.message}`);
+    victorBot.sendMessage(chatId, `❌ ${err.message}`);
   }
 });
 
-bot.onText(/\/approve_(\d+)/, (msg, match) => {
+victorBot.onText(/\/approve_(\d+)/, (msg, match) => {
   const id = parseInt(match[1]);
   if (pendingPermissions[id]) {
-    const desc = pendingPermissions[id].description;
     pendingPermissions[id].resolve(true);
     delete pendingPermissions[id];
-    bot.sendMessage(msg.chat.id, `✅ Access approved for: "${desc}"`);
+    victorBot.sendMessage(msg.chat.id, "✅ Approved.");
   } else {
-    bot.sendMessage(msg.chat.id, "No pending request found — it may have expired.");
+    victorBot.sendMessage(msg.chat.id, "No pending request found.");
   }
 });
 
-bot.onText(/\/deny_(\d+)/, (msg, match) => {
+victorBot.onText(/\/deny_(\d+)/, (msg, match) => {
   const id = parseInt(match[1]);
   if (pendingPermissions[id]) {
-    const desc = pendingPermissions[id].description;
-    pendingPermissions[id].reject(new Error("Denied by owner."));
+    pendingPermissions[id].reject(new Error("Denied."));
     delete pendingPermissions[id];
-    bot.sendMessage(msg.chat.id, `❌ Access denied for: "${desc}"`);
+    victorBot.sendMessage(msg.chat.id, "❌ Denied.");
   } else {
-    bot.sendMessage(msg.chat.id, "No pending request found.");
+    victorBot.sendMessage(msg.chat.id, "No pending request found.");
   }
 });
 
-bot.on("message", async (msg) => {
-  if (!msg.text || msg.text.startsWith("/")) return;
+// Brief Mimi command — Victor sends directive to Mimi's bot chat
+victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  if (!conversations[chatId]) conversations[chatId] = [];
-  await askVictor(chatId, msg.text);
+  const directive = match[1];
+  victorBot.sendMessage(chatId, `📨 Sending directive to Mimi...`);
+  try {
+    // Send to Mimi's bot as a directive from Victor
+    await mimiBot.sendMessage(OWNER_CHAT_ID,
+      `🏢 *Directive from Victor (CL2 — Company T)*\n\n${directive}`,
+      { parse_mode: "Markdown" }
+    );
+    // Also get Victor's AI response about the briefing
+    await handleVictor(chatId, `I just sent this directive to Mimi at Company C: "${directive}". Confirm what I expect back from her.`);
+  } catch (err) {
+    victorBot.sendMessage(chatId, `Failed to reach Mimi: ${err.message}`);
+  }
 });
 
-async function handleQuick(chatId, text) {
-  if (!conversations[chatId]) conversations[chatId] = [];
-  await askVictor(chatId, text);
-}
-
-async function askVictor(chatId, userText) {
-  bot.sendChatAction(chatId, "typing");
-  conversations[chatId].push({ role: "user", content: userText });
-  if (conversations[chatId].length > 20) {
-    conversations[chatId] = conversations[chatId].slice(-20);
+// Free text → Victor AI
+victorBot.on("message", async (msg) => {
+  if (!msg.text || msg.text.startsWith("/")) return;
+  // Check if message starts with "tell mimi" or "ask mimi"
+  const lower = msg.text.toLowerCase();
+  if (lower.startsWith("tell mimi") || lower.startsWith("ask mimi") || lower.startsWith("brief mimi")) {
+    const directive = msg.text.replace(/^(tell|ask|brief)\s+mimi\s*/i, "");
+    try {
+      await mimiBot.sendMessage(OWNER_CHAT_ID,
+        `🏢 *Directive from Victor (CL2 — Company T)*\n\n${directive}`,
+        { parse_mode: "Markdown" }
+      );
+      victorBot.sendMessage(msg.chat.id, `📨 Directive sent to Mimi: "${directive}"`);
+    } catch (err) {
+      victorBot.sendMessage(msg.chat.id, `Could not reach Mimi: ${err.message}`);
+    }
+    return;
   }
+  await handleVictor(msg.chat.id, msg.text);
+});
+
+async function handleVictor(chatId, text) {
+  if (!conversations[chatId]) conversations[chatId] = [];
+  victorBot.sendChatAction(chatId, "typing");
+  conversations[chatId].push({ role: "user", content: text });
+  if (conversations[chatId].length > 20) conversations[chatId] = conversations[chatId].slice(-20);
   try {
     const response = await client.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: VICTOR_PROMPT,
       messages: conversations[chatId],
     });
     const reply = response.content.find((b) => b.type === "text")?.text || "Something went wrong.";
     conversations[chatId].push({ role: "assistant", content: reply });
-    bot.sendMessage(chatId, reply);
+    victorBot.sendMessage(chatId, reply);
   } catch (err) {
     console.error("Victor API error:", err.message);
-    bot.sendMessage(chatId, "Something went wrong on my end. Please try again.");
+    victorBot.sendMessage(chatId, "Something went wrong on my end. Please try again.");
   }
 }
 
-console.log("Victor is online — Company T command centre active.");
+console.log("Victor is online — Company T command centre active. Company C under supervision.");
