@@ -2,13 +2,14 @@
   "name": "victor-bot",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
+  "main": "victor-bot.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node victor-bot.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^4.77.0"
   },
   "engines": {
     "node": ">=18"
