@@ -1,32 +1,33 @@
-import TelegramBot from "node-telegram-bot-api";
 import Anthropic from "@anthropic-ai/sdk";
+import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
 import http from "http";
-import fetch from "node-fetch";
-import * as cheerio from "cheerio";
  
-const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
+const VICTOR_TELEGRAM_TOKEN = process.env.VICTOR_TELEGRAM_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
-const PORT = process.env.PORT || 3001;
-const MIMI_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
+const PORT = process.env.PORT || 3000;
+const VICTOR_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
  
-if (!MIMI_TELEGRAM_TOKEN) throw new Error("MIMI_TELEGRAM_TOKEN is required");
+if (!VICTOR_TELEGRAM_TOKEN) throw new Error("VICTOR_TELEGRAM_TOKEN is required");
+if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
  
-const bot = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: true });
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const victorBot = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { polling: true });
+const mimiBot = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: false });
+const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
  
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Mimi is online.");
+  res.end("Victor is online.");
 }).listen(PORT, () => {
   console.log("Port " + PORT);
  
   // Keep-alive ping every 10 minutes
   setInterval(() => {
-    http.get(MIMI_URL, (res) => {
+    http.get(VICTOR_URL, (res) => {
       console.log("Keep-alive ping sent. Status:", res.statusCode);
     }).on("error", (err) => {
       console.error("Keep-alive error:", err.message);
@@ -35,176 +36,106 @@ http.createServer((req, res) => {
 });
  
 const conversations = {};
+const pendingPermissions = {};
+let permissionCounter = 0;
  
-const MIMI_PROMPT = "You are Mimi, General Manager of Company C, a cosmetics subsidiary. CL4. Team: Lara (Creative Director), Zoe (Graphic Designer), Kai (Social Media Lead). You have ChatGPT for visual ads and creative work. Personality: enthusiastic, creative, warm but professional. Keep responses 3-5 sentences unless creating content.";
+const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Company T owns Company C (cosmetics). Team: Joe (CL3), Mimi (CL4, GM of Company C), Lara/Zoe/Kai (CL5). You use Claude for strategy and ChatGPT for writing. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
  
 function detectAI(text) {
-  if (/\b(create|make|write|design|generate|draft|produce)\b/i.test(text) ||
-      /\b(ad|advertisement|campaign|copy|caption|post|content|script|brief|slogan|tagline|banner|visual|creative|social media|instagram|facebook|tiktok|poster|flyer)\b/i.test(text)) {
-    return "chatgpt";
-  }
-  return "mimi";
+  if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "chatgpt";
+  return "claude";
 }
  
-function extractURL(text) {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const matches = text.match(urlRegex);
-  return matches ? matches[0] : null;
-}
- 
-async function fetchWebpage(url) {
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; MimiBot/1.0)"
-      },
-      timeout: 10000
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const html = await response.text();
-    const $ = cheerio.load(html);
- 
-    // Remove scripts, styles, nav, footer for cleaner text
-    $("script, style, nav, footer, header, noscript").remove();
- 
-    const title = $("title").text().trim();
-    const text = $("body").text().replace(/\s+/g, " ").trim().slice(0, 3000);
- 
-    return `Page title: ${title}\n\nContent:\n${text}`;
-  } catch (err) {
-    return null;
-  }
-}
- 
-async function handleMimi(chatId, text, extraContext) {
-  if (!conversations[chatId]) conversations[chatId] = [];
- 
-  const userContent = extraContext ? `${text}\n\n[Webpage content fetched for you:\n${extraContext}]` : text;
-  conversations[chatId].push({ role: "user", content: userContent });
-  if (conversations[chatId].length > 20) conversations[chatId] = conversations[chatId].slice(-20);
- 
-  const r = await anthropic.messages.create({
-    model: "claude-sonnet-4-5", max_tokens: 1000,
-    system: MIMI_PROMPT, messages: conversations[chatId],
-  });
-  const reply = r.content.find(b => b.type === "text")?.text || "Something went wrong.";
-  conversations[chatId].push({ role: "assistant", content: reply });
-  return reply;
-}
- 
-async function handleChatGPT(text, system) {
-  const sys = system || "You are a world-class creative director and copywriter for Company C, a premium cosmetics brand. Produce high-quality visual advertisement concepts, ad copy, social media content, and creative briefs.";
+async function handleChatGPT(text) {
   const r = await openai.chat.completions.create({
-    model: "gpt-4o", max_tokens: 1500,
-    messages: [{ role: "system", content: sys }, { role: "user", content: text }],
+    model: "gpt-4o", max_tokens: 1000,
+    messages: [
+      { role: "system", content: "You are a professional writing assistant for Victor, Finance Director at Company T." },
+      { role: "user", content: text }
+    ]
   });
   return r.choices[0].message.content;
 }
  
-bot.onText(/\/start/, msg => {
+async function handleVictor(chatId, text) {
+  if (!conversations[chatId]) conversations[chatId] = [];
+  victorBot.sendChatAction(chatId, "typing");
+  conversations[chatId].push({ role: "user", content: text });
+  if (conversations[chatId].length > 20) conversations[chatId] = conversations[chatId].slice(-20);
+  try {
+    const r = await client.messages.create({
+      model: "claude-sonnet-4-5", max_tokens: 1000,
+      system: VICTOR_PROMPT, messages: conversations[chatId]
+    });
+    const reply = r.content.find(b => b.type === "text")?.text || "Error.";
+    conversations[chatId].push({ role: "assistant", content: reply });
+    victorBot.sendMessage(chatId, reply);
+  } catch (err) {
+    victorBot.sendMessage(chatId, "Something went wrong. Try again.");
+  }
+}
+ 
+victorBot.onText(/\/start/, msg => {
   conversations[msg.chat.id] = [];
-  bot.sendMessage(msg.chat.id,
-    "Hi! I'm Mimi - GM of Company C.\n\nFull ChatGPT access for visual advertising:\n\n/ad [product] - Visual ad concept\n/social [brief] - Social media content\n/copy [brief] - Ad copywriting\n/brief [product] - Creative brief for the team\n/campaign [product] - Full campaign\n/status - Team status\n/clear - Reset\n\nOr just type - I auto-route to ChatGPT for creative work!\n\nYou can also send me a URL and I'll read the page for you!"
+  victorBot.sendMessage(msg.chat.id, "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Claude — Strategy & analysis\n✍️ ChatGPT — Writing & content\n\nI route automatically. /help for commands.", { parse_mode: "Markdown" });
+});
+ 
+victorBot.onText(/\/help/, msg => {
+  victorBot.sendMessage(msg.chat.id,
+    "Victor's commands:\n\n📊 /performance\n💰 /budget\n📈 /expansion\n✍️ /write [brief]\n📋 /clearance\n📨 /brief_mimi [msg]\n🔄 /reset\n\nOr type freely — auto-routes to Claude or ChatGPT."
   );
 });
  
-bot.onText(/\/help/, msg => {
-  bot.sendMessage(msg.chat.id,
-    "Mimi Bot Commands:\n\n/ad [product]\n/social [brief]\n/copy [brief]\n/brief [product]\n/campaign [product]\n/translate [text]\n/status\n/clear\n/myid\n\nJust type naturally - auto-routes to ChatGPT for creative work!\n\nSend a URL to have me read and summarize a webpage!"
-  );
+victorBot.onText(/\/performance/, msg => handleVictor(msg.chat.id, "Give me a performance overview of Company C."));
+victorBot.onText(/\/budget/, msg => handleVictor(msg.chat.id, "What budget items need my sign-off from Company C?"));
+victorBot.onText(/\/expansion/, msg => handleVictor(msg.chat.id, "Assess Company C expansion readiness."));
+victorBot.onText(/\/reset/, msg => { conversations[msg.chat.id] = []; victorBot.sendMessage(msg.chat.id, "Reset."); });
+ 
+victorBot.onText(/\/clearance/, msg => {
+  victorBot.sendMessage(msg.chat.id, "CL2 Victor · CL3 Joe · CL4 Mimi · CL5 Lara/Zoe/Kai");
 });
  
-bot.onText(/\/clear/, msg => { conversations[msg.chat.id] = []; bot.sendMessage(msg.chat.id, "Cleared!"); });
-bot.onText(/\/myid/, msg => { bot.sendMessage(msg.chat.id, "Your chat ID: " + msg.chat.id); });
- 
-bot.onText(/\/status/, msg => {
-  bot.sendMessage(msg.chat.id, "Company C Team:\nMimi (GM) Online\nLara (Creative) Active\nZoe (Design) Active\nKai (Social) Active\n\nChatGPT: Full access | Claude: Strategy");
-});
- 
-bot.onText(/\/ad (.+)/, async (msg, match) => {
+victorBot.onText(/\/write (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Creating visual ad concept...");
+  victorBot.sendMessage(chatId, "✍️ Sending to ChatGPT...");
   try {
-    const reply = await handleChatGPT("Create a detailed visual advertisement concept for: " + match[1] + ". Include: headline, subheadline, visual description, color palette, mood, call to action, platform recommendations.", "You are a world-class creative director for Company C, a premium cosmetics brand.");
-    bot.sendMessage(chatId, "Ad Concept:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
+    const reply = await handleChatGPT(match[1]);
+    victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
+  } catch (err) { victorBot.sendMessage(chatId, "ChatGPT error: " + err.message); }
 });
  
-bot.onText(/\/social (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Creating social media content...");
-  try {
-    const reply = await handleChatGPT("Create engaging social media content for: " + match[1] + ". Provide versions for Instagram (caption + hashtags), TikTok (script/concept), Facebook (post copy). Make it trendy and on-brand for a premium cosmetics brand.", "You are a top social media strategist for Company C.");
-    bot.sendMessage(chatId, "Social Media Content:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
-});
- 
-bot.onText(/\/copy (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Writing ad copy...");
-  try {
-    const reply = await handleChatGPT("Write compelling ad copy for: " + match[1] + ". Include: long-form copy, short punchy version, tagline options, key selling points.", "You are an award-winning copywriter for Company C, a premium cosmetics brand.");
-    bot.sendMessage(chatId, "Ad Copy:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
-});
- 
-bot.onText(/\/brief (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Creating creative brief for the team...");
-  try {
-    const reply = await handleChatGPT("Create a detailed creative brief for the visual team (Creative Director, Graphic Designer, Social Media Lead) for: " + match[1] + ". Include: objective, target audience, key message, visual direction, deliverables, timeline suggestions.", "You are Mimi, GM of Company C. Create professional creative briefs for your visual team.");
-    bot.sendMessage(chatId, "Creative Brief:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
-});
- 
-bot.onText(/\/campaign (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "Building full campaign concept...");
-  try {
-    const reply = await handleChatGPT("Create a full advertising campaign for: " + match[1] + ". Include: campaign name, theme, target audience, key visuals, channel strategy (Instagram/TikTok/Facebook), content calendar outline, KPIs.", "You are a senior brand strategist for Company C, a premium cosmetics brand.");
-    bot.sendMessage(chatId, "Campaign Concept:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
-});
- 
-bot.onText(/\/translate (.+)/, async (msg, match) => {
+victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   try {
-    const reply = await handleChatGPT("Translate this text, provide only the translation: " + match[1]);
-    bot.sendMessage(chatId, "Translation:\n\n" + reply);
-  } catch (err) { bot.sendMessage(chatId, "Error: " + err.message); }
+    await mimiBot.sendMessage(OWNER_CHAT_ID, "🏢 *From Victor (CL2):*\n\n" + match[1], { parse_mode: "Markdown" });
+    victorBot.sendMessage(chatId, "📨 Sent to Mimi.");
+  } catch (err) { victorBot.sendMessage(chatId, "Could not reach Mimi: " + err.message); }
 });
  
-bot.on("message", async msg => {
+victorBot.on("message", async msg => {
   if (!msg.text || msg.text.startsWith("/")) return;
   const chatId = msg.chat.id;
-  bot.sendChatAction(chatId, "typing");
- 
+  const text = msg.text;
+  if (/^(tell|ask|brief) mimi/i.test(text)) {
+    const directive = text.replace(/^(tell|ask|brief)\s+mimi\s*/i, "");
+    try {
+      await mimiBot.sendMessage(OWNER_CHAT_ID, "🏢 *From Victor (CL2):*\n\n" + directive, { parse_mode: "Markdown" });
+      victorBot.sendMessage(chatId, "📨 Sent to Mimi.");
+    } catch (err) { victorBot.sendMessage(chatId, "Could not reach Mimi."); }
+    return;
+  }
+  const ai = detectAI(text);
+  victorBot.sendChatAction(chatId, "typing");
   try {
-    const url = extractURL(msg.text);
- 
-    if (url) {
-      bot.sendMessage(chatId, "Fetching that page for you...");
-      const pageContent = await fetchWebpage(url);
-      if (!pageContent) {
-        bot.sendMessage(chatId, "Sorry, I couldn't access that page. It may be blocked or require a login.");
-        return;
-      }
-      const reply = await handleMimi(chatId, msg.text, pageContent);
-      bot.sendMessage(chatId, reply);
-      return;
-    }
- 
-    const ai = detectAI(msg.text);
     if (ai === "chatgpt") {
-      bot.sendMessage(chatId, "Routing to ChatGPT...");
-      const reply = await handleChatGPT(msg.text);
-      bot.sendMessage(chatId, "ChatGPT:\n\n" + reply);
+      victorBot.sendMessage(chatId, "✍️ Routing to ChatGPT...");
+      const reply = await handleChatGPT(text);
+      victorBot.sendMessage(chatId, "✍️ *ChatGPT:*\n\n" + reply, { parse_mode: "Markdown" });
     } else {
-      const reply = await handleMimi(chatId, msg.text);
-      bot.sendMessage(chatId, reply);
+      await handleVictor(chatId, text);
     }
-  } catch (err) { bot.sendMessage(chatId, "Something went wrong. Please try again."); }
+  } catch (err) { victorBot.sendMessage(chatId, "Something went wrong."); }
 });
  
-console.log("Mimi online - Claude + ChatGPT full creative access.");
+console.log("Victor online — Claude + ChatGPT only.");
  
