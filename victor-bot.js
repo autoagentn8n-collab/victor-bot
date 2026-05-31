@@ -376,7 +376,7 @@ ${reply}`);
   } catch (e) {
     clearInterval(t);
     await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ❌ error"]);
-    victorBot.sendMessage(chatId, "Gmail error: " + e.message);
+    victorBot.sendMessage(chatId, `Gmail error: ${e.message}`);
   }
 });
 
@@ -446,7 +446,7 @@ ${reply}`);
         } catch (e) {
           clearInterval(t);
           await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ❌ error"]);
-          victorBot.sendMessage(chatId, "Gmail error: " + e.message);
+          victorBot.sendMessage(chatId, `Gmail error: ${e.message}`);
         }
       } else if (intent === "joey") {
         await runJoey(chatId, text, "working");
