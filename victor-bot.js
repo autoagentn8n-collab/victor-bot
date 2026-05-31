@@ -91,6 +91,35 @@ async function updateStatus(chatId, msgId, lines) {
   try { await victorBot.editMessageText(lines.join("\n"), { chat_id: chatId, message_id: msgId }); } catch (e) {}
 }
 
+// ─── Gmail via Claude + Gmail MCP ────────────────────────────────────────────
+async function handleGmail(chatId, instruction) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "mcp-client-2025-04-04"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 2000,
+      system: "You are Victor, Finance Director at Company T. CL2. You have access to Gmail. When reading emails, summarize clearly. When drafting, write professionally. Always confirm before sending.",
+      messages: [{ role: "user", content: instruction }],
+      mcp_servers: [
+        {
+          type: "url",
+          url: "https://gmailmcp.googleapis.com/mcp/v1",
+          name: "gmail"
+        }
+      ]
+    })
+  });
+  const data = await response.json();
+  const textBlock = data.content?.find(b => b.type === "text");
+  return textBlock?.text || "Could not process email request.";
+}
+
 // ─── Victor agent (Claude) ────────────────────────────────────────────────────
 const victorConversations = new Map();
 const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Hierarchy: CL1 (top) > CL2 Victor > CL3 Joe > CL4 Mimi > CL5 Joey/Lara/Zoe/Kai. Victor bypasses Mimi and commands Joey/Lara directly unless told otherwise. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
@@ -170,7 +199,8 @@ async function readImageText(fileId) {
 // ─── Intent detection ─────────────────────────────────────────────────────────
 function detectIntent(text) {
   if (/\b(thumbnail|image|photo|picture|graphic|illustration|logo|banner|poster|generate image|create image|draw|design image|visual)\b/i.test(text)) return "lara";
-  if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "joey";
+  if (/\b(email|gmail|inbox|send email|draft email|read email|check email|reply|unread|message to|write to)\b/i.test(text)) return "gmail";
+  if (/\b(write|copy|caption|post|content|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "joey";
   return "victor";
 }
 
@@ -245,7 +275,7 @@ victorBot.onText(/\/start/, msg => {
   const chatId = msg.chat.id;
   victorConversations.delete(chatId); joeyMemory.delete(chatId); laraMemory.delete(chatId);
   victorBot.sendMessage(chatId,
-    "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Creative sub-agent (GPT-5.4-mini)\n🖼️ Lara — Image sub-agent (Gemini/gpt-image-1)\n\n/team [task] — Direct full team\n/write [brief] — Joey writes\n/image [desc] — Lara generates\n/performance — Company C overview\n/budget — Budget review\n/expansion — Expansion assessment\n/brief_mimi [msg] — Message Mimi\n/clearance — Show hierarchy\n/reset — Reset memory\n\nI route automatically."
+    "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Creative sub-agent (GPT-5.4-mini)\n🖼️ Lara — Image sub-agent (Gemini/gpt-image-1)\n📧 Gmail — Read, draft & send emails\n\n/team [task] — Direct full team\n/write [brief] — Joey writes\n/image [desc] — Lara generates\n/email [instruction] — Gmail access\n/performance — Company C overview\n/budget — Budget review\n/expansion — Expansion assessment\n/brief_mimi [msg] — Message Mimi\n/clearance — Show hierarchy\n/reset — Reset memory\n\nI route automatically. Just say 'read my emails' or 'send email to...'"
   );
 });
 
@@ -301,6 +331,24 @@ victorBot.onText(/\/expansion/, async msg => {
   victorBot.sendMessage(chatId, `🧠 Victor:\n\n${r}`);
 });
 
+victorBot.onText(/\/email (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const sm = await sendStatus(chatId, ["⚡ Team Status:", "📧 Victor — ⏳ accessing Gmail..."]);
+  const t = setInterval(() => victorBot.sendChatAction(chatId, "typing"), 4500);
+  try {
+    const reply = await handleGmail(chatId, match[1]);
+    clearInterval(t);
+    await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ✅ done!"]);
+    victorBot.sendMessage(chatId, `📧 Victor:
+
+${reply}`);
+  } catch (e) {
+    clearInterval(t);
+    await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ❌ error"]);
+    victorBot.sendMessage(chatId, "Gmail error: " + e.message);
+  }
+});
+
 victorBot.onText(/\/brief_mimi (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   try {
@@ -354,6 +402,21 @@ victorBot.on("message", async msg => {
       const intent = detectIntent(text);
       if (intent === "lara") {
         await runLara(chatId, text);
+      } else if (intent === "gmail") {
+        const sm = await sendStatus(chatId, ["⚡ Team Status:", "📧 Victor — ⏳ accessing Gmail..."]);
+        const t = setInterval(() => victorBot.sendChatAction(chatId, "typing"), 4500);
+        try {
+          const reply = await handleGmail(chatId, text);
+          clearInterval(t);
+          await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ✅ done!"]);
+          victorBot.sendMessage(chatId, `📧 Victor:
+
+${reply}`);
+        } catch (e) {
+          clearInterval(t);
+          await updateStatus(chatId, sm.message_id, ["⚡ Team Status:", "📧 Victor — ❌ error"]);
+          victorBot.sendMessage(chatId, "Gmail error: " + e.message);
+        }
       } else if (intent === "joey") {
         await runJoey(chatId, text, "working");
       } else {
