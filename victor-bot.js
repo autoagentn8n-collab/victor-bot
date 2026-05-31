@@ -7,6 +7,7 @@ import fetch from "node-fetch";
 const VICTOR_TELEGRAM_TOKEN = process.env.VICTOR_TELEGRAM_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
 const PORT = process.env.PORT || 3000;
@@ -36,12 +37,12 @@ http.createServer((req, res) => {
 
 const conversations = {};
 
-const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Company T owns Company C (cosmetics). Team: Joe (CL3), Mimi (CL4, GM of Company C), Lara/Zoe/Kai/Joey (CL5). Joey handles creative text via GPT-4o, Lara handles image generation via DALL-E 3. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
+const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Company T owns Company C (cosmetics). Hierarchy: CL1 (top) > CL2 Victor > CL3 Joe > CL4 Mimi > CL5 Joey/Lara/Zoe/Kai. Victor can bypass Mimi and command Joey/Lara directly unless told otherwise. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
 
 const JOEY_PROMPT = "You are Joey, CL5 Creative team member at Company C, a premium cosmetics brand. You work under Mimi (GM) and specialize in creative content, ads, copywriting, and social media. You are energetic, imaginative, and detail-oriented. Always produce high-quality, on-brand creative work.";
 
 function detectIntent(text) {
-  if (/\b(thumbnail|image|photo|picture|graphic|illustration|logo|banner|poster|visual|generate image|create image|draw|design image)\b/i.test(text)) return "lara";
+  if (/\b(thumbnail|image|photo|picture|graphic|illustration|logo|banner|poster|generate image|create image|draw|design image)\b/i.test(text)) return "lara";
   if (/\b(write|copy|caption|post|content|email|message|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "joey";
   return "claude";
 }
@@ -53,7 +54,7 @@ async function readImageText(fileId) {
     const buffer = await imageResponse.buffer();
     const base64Image = buffer.toString("base64");
     const response = await openai.chat.completions.create({
-      model: "gpt-4.5",
+      model: "gpt-5.4-mini",
       max_tokens: 1000,
       messages: [{
         role: "user",
@@ -69,23 +70,49 @@ async function readImageText(fileId) {
   }
 }
 
-// Joey handles all ChatGPT creative text work
+// Joey — GPT-4.5 creative text
 async function handleJoey(text, extraSystem) {
   const sys = extraSystem || JOEY_PROMPT;
   const r = await openai.chat.completions.create({
-    model: "gpt-4.5", max_tokens: 1000,
+    model: "gpt-5.4-mini", max_tokens: 1000,
     messages: [{ role: "system", content: sys }, { role: "user", content: text }]
   });
   return r.choices[0].message.content;
 }
 
-// Lara handles all DALL-E 3 image generation
+// Lara — Google Gemini image generation (free) with DALL-E 3 fallback
 async function handleLara(prompt) {
   const refinedPrompt = await handleJoey(
-    `Create a detailed DALL-E 3 image generation prompt for: ${prompt}. Make it vivid, specific, and optimized for a premium cosmetics brand. Return only the image prompt, nothing else.`,
-    "You are Joey, a creative prompt engineer for DALL-E 3 image generation at Company C cosmetics."
+    `Create a detailed image generation prompt for: ${prompt}. Make it vivid, specific, and optimized for a premium cosmetics brand. Return only the image prompt, nothing else.`,
+    "You are Joey, a creative prompt engineer for AI image generation at Company C cosmetics."
   );
 
+  // Try Google Gemini first (free)
+  if (GEMINI_API_KEY) {
+    try {
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: refinedPrompt }] }],
+            generationConfig: { responseModalities: ["IMAGE", "TEXT"] }
+          })
+        }
+      );
+      const geminiData = await geminiResponse.json();
+      const imagePart = geminiData?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (imagePart) {
+        const imageBuffer = Buffer.from(imagePart.inlineData.data, "base64");
+        return { type: "buffer", data: imageBuffer, mimeType: imagePart.inlineData.mimeType };
+      }
+    } catch (err) {
+      console.error("Gemini error, falling back to DALL-E 3:", err.message);
+    }
+  }
+
+  // Fallback to DALL-E 3
   const response = await openai.images.generate({
     model: "dall-e-3",
     prompt: refinedPrompt,
@@ -93,8 +120,7 @@ async function handleLara(prompt) {
     size: "1024x1024",
     quality: "standard",
   });
-
-  return response.data[0].url;
+  return { type: "url", data: response.data[0].url };
 }
 
 async function handleVictor(chatId, text) {
@@ -115,14 +141,51 @@ async function handleVictor(chatId, text) {
   }
 }
 
+// Team mode — Victor coordinates Joey and Lara directly
+async function handleTeam(chatId, task) {
+  await victorBot.sendMessage(chatId, "🏢 Victor is directing the team...");
+
+  // Step 1: Victor creates the strategy
+  if (!conversations[chatId]) conversations[chatId] = [];
+  const r = await client.messages.create({
+    model: "claude-sonnet-4-5", max_tokens: 1000,
+    system: VICTOR_PROMPT,
+    messages: [{ role: "user", content: `As Finance Director, create a strategic brief for the creative team for: ${task}` }]
+  });
+  const strategy = r.content.find(b => b.type === "text")?.text || "";
+  await victorBot.sendMessage(chatId, `🧠 Victor (Strategy):\n\n${strategy}`);
+
+  // Step 2: Joey writes the copy
+  await victorBot.sendMessage(chatId, "🎨 Joey is writing the copy...");
+  const copy = await handleJoey(
+    `Based on this strategic brief: "${strategy}"\n\nWrite complete ad copy for: ${task}. Include headline, body copy, caption, and hashtags.`
+  );
+  await victorBot.sendMessage(chatId, `🎨 Joey (Copy):\n\n${copy}`);
+
+  // Step 3: Lara generates the image
+  await victorBot.sendMessage(chatId, "🖼️ Lara is generating the visual...");
+  try {
+    const image = await handleLara(task);
+    if (image.type === "buffer") {
+      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (Gemini)" });
+    } else {
+      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (DALL-E 3)" });
+    }
+  } catch (err) {
+    await victorBot.sendMessage(chatId, "🖼️ Lara couldn't generate the image: " + err.message);
+  }
+
+  await victorBot.sendMessage(chatId, "✅ Team delivery complete!");
+}
+
 victorBot.onText(/\/start/, msg => {
   conversations[msg.chat.id] = [];
-  victorBot.sendMessage(msg.chat.id, "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor (me) — Strategy via Claude\n🎨 Joey — Writing & creative via GPT-4o\n🖼️ Lara — Image generation via DALL-E 3\n📷 Vision — Image text reading\n\nI route automatically. /help for commands.");
+  victorBot.sendMessage(msg.chat.id, "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Writing (GPT-4.5)\n🖼️ Lara — Images (Gemini/DALL-E 3)\n\n/team [task] - Direct full team\n/write [brief] - Joey writes\n/image [desc] - Lara generates\n/performance /budget /expansion\n/brief_mimi [msg] - Message Mimi\n/reset\n\nI route automatically.");
 });
 
 victorBot.onText(/\/help/, msg => {
   victorBot.sendMessage(msg.chat.id,
-    "Victor's commands:\n\n📊 /performance\n💰 /budget\n📈 /expansion\n✍️ /write [brief]\n🖼️ /image [description]\n📋 /clearance\n📨 /brief_mimi [msg]\n🔄 /reset\n\nAuto-routes:\n🧠 Strategy → Victor (Claude)\n🎨 Writing → Joey (GPT-4o)\n🖼️ Images → Lara (DALL-E 3)\n\nSend an image to read text from it!"
+    "Victor's commands:\n\n🏢 /team [task] - Full team mode\n📊 /performance\n💰 /budget\n📈 /expansion\n✍️ /write [brief]\n🖼️ /image [description]\n📋 /clearance\n📨 /brief_mimi [msg]\n🔄 /reset\n\nAuto-routes:\n🧠 Strategy → Victor (Claude)\n🎨 Writing → Joey (GPT-4.5)\n🖼️ Images → Lara (Gemini/DALL-E 3)"
   );
 });
 
@@ -130,9 +193,13 @@ victorBot.onText(/\/performance/, msg => handleVictor(msg.chat.id, "Give me a pe
 victorBot.onText(/\/budget/, msg => handleVictor(msg.chat.id, "What budget items need my sign-off from Company C?"));
 victorBot.onText(/\/expansion/, msg => handleVictor(msg.chat.id, "Assess Company C expansion readiness."));
 victorBot.onText(/\/reset/, msg => { conversations[msg.chat.id] = []; victorBot.sendMessage(msg.chat.id, "Reset."); });
+victorBot.onText(/\/clearance/, msg => { victorBot.sendMessage(msg.chat.id, "CL1 (Top) > CL2 Victor > CL3 Joe > CL4 Mimi > CL5 Joey/Lara/Zoe/Kai"); });
 
-victorBot.onText(/\/clearance/, msg => {
-  victorBot.sendMessage(msg.chat.id, "CL2 Victor · CL3 Joe · CL4 Mimi · CL5 Lara/Zoe/Kai/Joey");
+victorBot.onText(/\/team (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  try {
+    await handleTeam(chatId, match[1]);
+  } catch (err) { victorBot.sendMessage(chatId, "Team error: " + err.message); }
 });
 
 victorBot.onText(/\/write (.+)/, async (msg, match) => {
@@ -148,8 +215,12 @@ victorBot.onText(/\/image (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   victorBot.sendMessage(chatId, "🖼️ Lara is generating your image...");
   try {
-    const imageUrl = await handleLara(match[1]);
-    await victorBot.sendPhoto(chatId, imageUrl, { caption: "🖼️ Lara (DALL-E 3)" });
+    const image = await handleLara(match[1]);
+    if (image.type === "buffer") {
+      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (Gemini)" });
+    } else {
+      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (DALL-E 3)" });
+    }
   } catch (err) { victorBot.sendMessage(chatId, "Error generating image: " + err.message); }
 });
 
@@ -173,10 +244,9 @@ victorBot.on("photo", async msg => {
       return;
     }
     const caption = msg.caption || "What is in this image?";
-    const fullText = `${caption}\n\n[Image content: ${imageText}]`;
-    await handleVictor(chatId, fullText);
+    await handleVictor(chatId, `${caption}\n\n[Image content: ${imageText}]`);
   } catch (err) {
-    victorBot.sendMessage(chatId, "Something went wrong reading the image. Please try again.");
+    victorBot.sendMessage(chatId, "Something went wrong reading the image.");
   }
 });
 
@@ -197,8 +267,12 @@ victorBot.on("message", async msg => {
   try {
     if (intent === "lara") {
       victorBot.sendMessage(chatId, "🖼️ Passing to Lara...");
-      const imageUrl = await handleLara(text);
-      await victorBot.sendPhoto(chatId, imageUrl, { caption: "🖼️ Lara (DALL-E 3)" });
+      const image = await handleLara(text);
+      if (image.type === "buffer") {
+        await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (Gemini)" });
+      } else {
+        await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (DALL-E 3)" });
+      }
     } else if (intent === "joey") {
       victorBot.sendMessage(chatId, "🎨 Passing to Joey...");
       const reply = await handleJoey(text);
@@ -209,4 +283,4 @@ victorBot.on("message", async msg => {
   } catch (err) { victorBot.sendMessage(chatId, "Something went wrong."); }
 });
 
-console.log("Victor online — Claude (Victor) + GPT-4o (Joey) + DALL-E 3 (Lara).");
+console.log("Victor online — Claude (Victor) + GPT-4.5 (Joey) + Gemini/DALL-E 3 (Lara) + Team Mode.");
