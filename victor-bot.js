@@ -36,6 +36,21 @@ http.createServer((req, res) => {
 });
 
 const conversations = {};
+const processing = new Map();
+
+async function withUserLock(chatId, fn) {
+  const prev = processing.get(chatId) || Promise.resolve();
+  let resolve;
+  const next = new Promise(r => resolve = r);
+  processing.set(chatId, next);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    resolve();
+    if (processing.get(chatId) === next) processing.delete(chatId);
+  }
+}
 
 const VICTOR_PROMPT = "You are Victor, Finance Director at Company T. CL2. Hierarchy: CL1 (top) > CL2 Victor > CL3 Joe > CL4 Mimi > CL5 Joey/Lara/Zoe/Kai. Victor bypasses Mimi and commands Joey/Lara directly unless told otherwise. Personality: precise, financially rigorous, authoritative. Keep responses 3-6 sentences.";
 
@@ -265,6 +280,7 @@ victorBot.on("message", async msg => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
+  withUserLock(chatId, async () => {
   if (/^(tell|ask|brief) mimi/i.test(text)) {
     const directive = text.replace(/^(tell|ask|brief)\s+mimi\s*/i, "");
     try {
@@ -301,6 +317,7 @@ victorBot.on("message", async msg => {
       victorBot.sendMessage(chatId, "🧠 Victor:\n\n" + reply);
     }
   } catch (err) { victorBot.sendMessage(chatId, "Something went wrong."); }
+  }); // end withUserLock
 });
 
 console.log("Victor online — Claude (Victor) + GPT-5.4-mini (Joey) + Gemini/DALL-E 3 (Lara) + Parallel Team Mode.");
