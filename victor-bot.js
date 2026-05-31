@@ -11,26 +11,37 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 const MIMI_TELEGRAM_TOKEN = process.env.MIMI_TELEGRAM_TOKEN;
 const PORT = process.env.PORT || 3000;
-const VICTOR_URL = (process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace("https://", "http://");
+// Webhook mode — no keep-alive needed
 
 if (!VICTOR_TELEGRAM_TOKEN) throw new Error("VICTOR_TELEGRAM_TOKEN is required");
 if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is required");
 
-const victorBot = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { polling: true });
+const victorBot = new TelegramBot(VICTOR_TELEGRAM_TOKEN, { webHook: true });
+victorBot.setWebHook(`${process.env.RENDER_EXTERNAL_URL}/bot${VICTOR_TELEGRAM_TOKEN}`);
 const mimiBot = new TelegramBot(MIMI_TELEGRAM_TOKEN, { polling: false });
 const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Victor is online.");
-}).listen(PORT, () => {
+// Webhook server — no polling, no 409 conflicts
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === `/bot${VICTOR_TELEGRAM_TOKEN}`) {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      try {
+        victorBot.processUpdate(JSON.parse(body));
+      } catch (e) {}
+      res.writeHead(200);
+      res.end("OK");
+    });
+  } else {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Victor is online.");
+  }
+});
+
+server.listen(PORT, () => {
   console.log("Port " + PORT);
-  setInterval(() => {
-    http.get(VICTOR_URL, (res) => {
-      console.log("Keep-alive ping. Status:", res.statusCode);
-    }).on("error", (err) => console.error("Keep-alive error:", err.message));
-  }, 10 * 60 * 1000);
 });
 
 // ─── Per-user concurrency lock ───────────────────────────────────────────────
