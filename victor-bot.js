@@ -44,55 +44,25 @@ async function withUserLock(chatId, fn) {
   finally { resolve(); if (processing.get(chatId) === next) processing.delete(chatId); }
 }
 
-// ─── Persistent sub-agent threads (memory per user) ─────────────────────────
-const joeyThreads = new Map();
-const laraThreads = new Map();
-let joeyAssistantId = null;
-let laraAssistantId = null;
+// ─── Persistent sub-agent memory (Responses API) ────────────────────────────
+const joeyMemory = new Map();
+const laraMemory = new Map();
 
-async function getOrCreateJoeyAssistant() {
-  if (joeyAssistantId) return joeyAssistantId;
-  const assistant = await openai.beta.assistants.create({
-    name: "Joey",
-    instructions: "You are Joey, CL5 Creative team member at Company C, a premium cosmetics brand. You specialize in creative content, ads, copywriting, and social media. Energetic, imaginative, detail-oriented. Produce high-quality on-brand work. Remember context from previous messages.",
+const JOEY_SYSTEM = "You are Joey, CL5 Creative team member at Company C, a premium cosmetics brand. You specialize in creative content, ads, copywriting, and social media. Energetic, imaginative, detail-oriented. Produce high-quality on-brand work.";
+
+const LARA_SYSTEM = "You are Lara, Creative Director at Company C, a premium cosmetics brand. You specialize in image direction and visual creative strategy. When asked to generate an image, write a detailed vivid image generation prompt optimized for premium cosmetics. Return only the image prompt.";
+
+async function runWithMemory(memoryMap, chatId, systemPrompt, userMessage) {
+  const previousId = memoryMap.get(chatId);
+  const params = {
     model: "gpt-5.4-mini",
-  });
-  joeyAssistantId = assistant.id;
-  console.log("Joey assistant created:", joeyAssistantId);
-  return joeyAssistantId;
-}
-
-async function getOrCreateLaraAssistant() {
-  if (laraAssistantId) return laraAssistantId;
-  const assistant = await openai.beta.assistants.create({
-    name: "Lara",
-    instructions: "You are Lara, Creative Director at Company C, a premium cosmetics brand. You specialize in image direction and visual creative strategy. When asked to generate an image, write a detailed vivid image generation prompt optimized for premium cosmetics. Return only the image prompt.",
-    model: "gpt-5.4-mini",
-  });
-  laraAssistantId = assistant.id;
-  console.log("Lara assistant created:", laraAssistantId);
-  return laraAssistantId;
-}
-
-async function getOrCreateThread(threadMap, chatId) {
-  if (threadMap.has(chatId)) return threadMap.get(chatId);
-  const thread = await openai.beta.threads.create();
-  threadMap.set(chatId, thread.id);
-  return thread.id;
-}
-
-async function runAssistant(assistantId, threadId, message) {
-  await openai.beta.threads.messages.create(threadId, { role: "user", content: message });
-  const run = await openai.beta.threads.runs.create(threadId, { assistant_id: assistantId });
-  let runStatus = run;
-  while (runStatus.status !== "completed" && runStatus.status !== "failed") {
-    await new Promise(r => setTimeout(r, 1000));
-    runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
-  }
-  if (runStatus.status === "failed") throw new Error("Assistant run failed: " + runStatus.last_error?.message);
-  const messages = await openai.beta.threads.messages.list(threadId);
-  const latest = messages.data[0];
-  return latest.content[0].type === "text" ? latest.content[0].text.value : "No response.";
+    instructions: systemPrompt,
+    input: userMessage,
+    ...(previousId && { previous_response_id: previousId })
+  };
+  const response = await openai.responses.create(params);
+  memoryMap.set(chatId, response.id);
+  return response.output_text;
 }
 
 // ─── Live status bar helper ──────────────────────────────────────────────────
@@ -123,18 +93,14 @@ async function agentVictor(chatId, text) {
   return reply;
 }
 
-// ─── Joey sub-agent ──────────────────────────────────────────────────────────
+// ─── Joey sub-agent (Responses API with memory) ──────────────────────────────
 async function agentJoey(chatId, task) {
-  const assistantId = await getOrCreateJoeyAssistant();
-  const threadId = await getOrCreateThread(joeyThreads, chatId);
-  return await runAssistant(assistantId, threadId, task);
+  return await runWithMemory(joeyMemory, chatId, JOEY_SYSTEM, task);
 }
 
-// ─── Lara sub-agent ──────────────────────────────────────────────────────────
+// ─── Lara sub-agent (Responses API + image generation) ───────────────────────
 async function agentLara(chatId, prompt) {
-  const assistantId = await getOrCreateLaraAssistant();
-  const threadId = await getOrCreateThread(laraThreads, chatId);
-  const imagePrompt = await runAssistant(assistantId, threadId,
+  const imagePrompt = await runWithMemory(laraMemory, chatId, LARA_SYSTEM,
     `Create a detailed image generation prompt for: ${prompt}. Optimized for premium cosmetics. Return only the prompt.`
   );
 
@@ -280,8 +246,8 @@ async function laraCommand(chatId, prompt) {
 // ─── Commands ─────────────────────────────────────────────────────────────────
 victorBot.onText(/\/start/, msg => {
   conversations[msg.chat.id] = [];
-  joeyThreads.delete(msg.chat.id);
-  laraThreads.delete(msg.chat.id);
+  joeyMemory.delete(msg.chat.id);
+  laraMemory.delete(msg.chat.id);
   victorBot.sendMessage(msg.chat.id,
     "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Creative sub-agent (GPT-5.4-mini + memory)\n🖼️ Lara — Image sub-agent (Gemini/gpt-image-1 + memory)\n\n/team [task] - Direct full team\n/write [brief] - Joey writes\n/image [desc] - Lara generates\n/performance /budget /expansion\n/brief_mimi [msg] - Message Mimi\n/reset\n\nI route automatically."
   );
@@ -295,8 +261,8 @@ victorBot.onText(/\/help/, msg => {
 
 victorBot.onText(/\/reset/, msg => {
   conversations[msg.chat.id] = [];
-  joeyThreads.delete(msg.chat.id);
-  laraThreads.delete(msg.chat.id);
+  joeyMemory.delete(msg.chat.id);
+  laraMemory.delete(msg.chat.id);
   victorBot.sendMessage(msg.chat.id, "Reset! Joey and Lara memory cleared.");
 });
 
