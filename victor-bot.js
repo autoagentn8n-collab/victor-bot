@@ -91,8 +91,9 @@ async function updateStatus(chatId, msgId, lines) {
   try { await victorBot.editMessageText(lines.join("\n"), { chat_id: chatId, message_id: msgId }); } catch (e) {}
 }
 
-// ─── Gmail via Claude + Gmail MCP ────────────────────────────────────────────
+// ─── Gmail via Claude API + Gmail MCP relay ──────────────────────────────────
 async function handleGmail(chatId, instruction) {
+  // Victor relays the request to Claude which has Gmail MCP access
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -104,8 +105,13 @@ async function handleGmail(chatId, instruction) {
     body: JSON.stringify({
       model: "claude-sonnet-4-5",
       max_tokens: 2000,
-      system: "You are Victor, Finance Director at Company T. CL2. You have access to Gmail. When reading emails, summarize clearly. When drafting, write professionally. Always confirm before sending.",
-      messages: [{ role: "user", content: instruction }],
+      system: `You are Claude, acting as Victor's assistant. Victor is Finance Director at Company T (CL2).
+You have access to Gmail via MCP. Complete the email task Victor gives you.
+- For reading: summarize emails clearly with sender, subject, date
+- For drafting: write professionally in Victor's voice
+- For sending: confirm what was sent
+Be concise and professional.`,
+      messages: [{ role: "user", content: `Victor's instruction: ${instruction}` }],
       mcp_servers: [
         {
           type: "url",
@@ -115,9 +121,20 @@ async function handleGmail(chatId, instruction) {
       ]
     })
   });
+
   const data = await response.json();
-  const textBlock = data.content?.find(b => b.type === "text");
-  return textBlock?.text || "Could not process email request.";
+  console.log("Gmail relay response:", JSON.stringify(data).slice(0, 300));
+
+  if (data.error) throw new Error(data.error.message);
+
+  // Extract text from all content blocks including tool results
+  const textParts = data.content
+    ?.filter(b => b.type === "text")
+    .map(b => b.text)
+    .join("
+") || "No response from Gmail.";
+
+  return textParts;
 }
 
 // ─── Victor agent (Claude) ────────────────────────────────────────────────────
