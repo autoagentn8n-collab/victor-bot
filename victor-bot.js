@@ -106,17 +106,30 @@ async function handleGmail(chatId, instruction) {
       model: "claude-sonnet-4-5",
       max_tokens: 2000,
       system: `You are Claude, acting as Victor's assistant. Victor is Finance Director at Company T (CL2).
-You have access to Gmail via MCP. Complete the email task Victor gives you.
-- For reading: summarize emails clearly with sender, subject, date
-- For drafting: write professionally in Victor's voice
-- For sending: confirm what was sent
-Be concise and professional.`,
+You have access to Gmail and Google Drive via MCP. Complete the task Victor gives you.
+- For reading emails: summarize clearly with sender, subject, date
+- For drafting emails: write professionally in Victor's voice
+- For sending emails: confirm what was sent
+- For saving attachments to Drive: download attachments from Gmail and save to the specified Google Drive folder. Create the folder if it doesn't exist.
+- For organizing Drive: create folders, move files as instructed
+Be concise and professional. Always confirm what actions were completed.`,
       messages: [{ role: "user", content: `Victor's instruction: ${instruction}` }],
       mcp_servers: [
         {
           type: "url",
           url: "https://gmailmcp.googleapis.com/mcp/v1",
-          name: "gmail"
+          name: "gmail",
+          ...(process.env.GMAIL_ACCESS_TOKEN && {
+            authorization_token: process.env.GMAIL_ACCESS_TOKEN
+          })
+        },
+        {
+          type: "url",
+          url: "https://drivemcp.googleapis.com/mcp/v1",
+          name: "google-drive",
+          ...(process.env.GMAIL_ACCESS_TOKEN && {
+            authorization_token: process.env.GMAIL_ACCESS_TOKEN
+          })
         }
       ]
     })
@@ -216,7 +229,8 @@ async function readImageText(fileId) {
 // ─── Intent detection ─────────────────────────────────────────────────────────
 function detectIntent(text) {
   if (/\b(thumbnail|image|photo|picture|graphic|illustration|logo|banner|poster|generate image|create image|draw|design image|visual)\b/i.test(text)) return "lara";
-  if (/\b(email|gmail|inbox|send email|draft email|read email|check email|reply|unread|message to|write to)\b/i.test(text)) return "gmail";
+  if (/\b(email|gmail|inbox|send email|draft email|read email|check email|reply|unread|message to|write to|save attachment|download attachment|save to drive|move to drive)\b/i.test(text)) return "gmail";
+  if (/\b(drive|google drive|folder|save file|upload|documents|organize files)\b/i.test(text)) return "gmail";
   if (/\b(write|copy|caption|post|content|script|slogan|tagline|ad|campaign|brief|draft)\b/i.test(text)) return "joey";
   return "victor";
 }
@@ -292,7 +306,7 @@ victorBot.onText(/\/start/, msg => {
   const chatId = msg.chat.id;
   victorConversations.delete(chatId); joeyMemory.delete(chatId); laraMemory.delete(chatId);
   victorBot.sendMessage(chatId,
-    "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Creative sub-agent (GPT-5.4-mini)\n🖼️ Lara — Image sub-agent (Gemini/gpt-image-1)\n📧 Gmail — Read, draft & send emails\n\n/team [task] — Direct full team\n/write [brief] — Joey writes\n/image [desc] — Lara generates\n/email [instruction] — Gmail access\n/performance — Company C overview\n/budget — Budget review\n/expansion — Expansion assessment\n/brief_mimi [msg] — Message Mimi\n/clearance — Show hierarchy\n/reset — Reset memory\n\nI route automatically. Just say 'read my emails' or 'send email to...'"
+    "Good morning. I'm Victor — Finance Director, CL2.\n\n🧠 Victor — Strategy (Claude)\n🎨 Joey — Creative sub-agent (GPT-5.4-mini)\n🖼️ Lara — Image sub-agent (Gemini/gpt-image-1)\n📧 Gmail — Read, draft & send emails\n📁 Google Drive — Save & organize files\n\n/team [task] — Direct full team\n/write [brief] — Joey writes\n/image [desc] — Lara generates\n/email [instruction] — Gmail & Drive access\n/performance — Company C overview\n/budget — Budget review\n/expansion — Expansion assessment\n/brief_mimi [msg] — Message Mimi\n/clearance — Show hierarchy\n/reset — Reset memory\n\nJust say:\n'read my emails'\n'save attachments from [email] to Drive'\n'create a Finance folder in Drive'"
   );
 });
 
