@@ -154,7 +154,7 @@ async function agentVictor(chatId, text) {
   } catch (err) { return "Something went wrong. Try again."; }
 }
 
-// Team mode — Victor directs Joey & Lara in PARALLEL
+// Team mode — Victor directs Joey & Lara in PARALLEL with live status
 async function handleTeam(chatId, task) {
   victorBot.sendChatAction(chatId, "typing");
   await victorBot.sendMessage(chatId, "🏢 Victor is directing the team...");
@@ -165,14 +165,31 @@ async function handleTeam(chatId, task) {
   clearInterval(typingInterval1);
   await victorBot.sendMessage(chatId, `🧠 Victor:\n\n${strategy}`);
 
-  // Step 2: Joey & Lara work IN PARALLEL
-  await victorBot.sendMessage(chatId, "🎨 Joey is writing... 🖼️ Lara is generating... (parallel)");
+  // Step 2: Send live status message
+  const statusMsg = await victorBot.sendMessage(chatId,
+    "⚡ Team Status:\n🎨 Joey — ⏳ writing...\n🖼️ Lara — ⏳ generating..."
+  );
+  const statusMsgId = statusMsg.message_id;
+
   const typingInterval2 = setInterval(() => victorBot.sendChatAction(chatId, "typing"), 4500);
+  const status = { joey: "⏳ writing...", lara: "⏳ generating..." };
+
+  const updateStatus = async () => {
+    try {
+      await victorBot.editMessageText(
+        `⚡ Team Status:\n🎨 Joey — ${status.joey}\n🖼️ Lara — ${status.lara}`,
+        { chat_id: chatId, message_id: statusMsgId }
+      );
+    } catch (e) {}
+  };
 
   try {
     const [copy, image] = await Promise.all([
-      agentJoey(`Strategy: "${strategy}"\n\nWrite ad copy for: ${task}. Headline, body, caption, hashtags.`),
+      agentJoey(`Strategy: "${strategy}"\n\nWrite ad copy for: ${task}. Headline, body, caption, hashtags.`)
+        .then(result => { status.joey = "✅ done!"; updateStatus(); return result; }),
       agentLara(task)
+        .then(result => { status.lara = "✅ done!"; updateStatus(); return result; })
+        .catch(err => { status.lara = "❌ error"; updateStatus(); throw err; })
     ]);
     clearInterval(typingInterval2);
 
@@ -180,7 +197,7 @@ async function handleTeam(chatId, task) {
     if (image.type === "buffer") {
       await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (Gemini)" });
     } else {
-      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (DALL-E 3)" });
+      await victorBot.sendPhoto(chatId, image.data, { caption: "🖼️ Lara (gpt-image-1)" });
     }
     await victorBot.sendMessage(chatId, "✅ Team delivery complete!");
   } catch (err) {
